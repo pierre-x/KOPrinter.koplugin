@@ -117,15 +117,15 @@ G_reader_settings = {
 }
 
 -- Load the plugin --------------------------------------------------------------
-local KoPrinter = require("main")
-local plugin = KoPrinter:new{ ui = { menu = { registerToMainMenu = noop } } }
+local KOPrinter = require("main")
+local plugin = KOPrinter:new{ ui = { menu = { registerToMainMenu = noop } } }
 
-check(KoPrinter.isEnabled(), "enabled by default")
-check(KoPrinter.isRunning(), "started on init when the network is connected")
+check(KOPrinter.isEnabled(), "enabled by default")
+check(KOPrinter.isRunning(), "started on init when the network is connected")
 check(#zmqs == 1 and zmqs[1].waitEvent and zmqs[1].stop, "registered as a ZMQ")
-check(KoPrinter.opensOnReceive(), "opens received documents by default")
-check(lfs.attributes(spool_root .. "/KoPrinter", "mode") == "directory",
-      "spool folder created under the library: " .. spool_root .. "/KoPrinter")
+check(KOPrinter.opensOnReceive(), "opens received documents by default")
+check(lfs.attributes(spool_root .. "/KOPrinter", "mode") == "directory",
+      "spool folder created under the library: " .. spool_root .. "/KOPrinter")
 check(broadcast[#broadcast] == "onMDNSServicesChanged", "asked mDNS to announce the printer")
 
 -- The mDNS responder collects the printer service ------------------------------
@@ -355,8 +355,8 @@ check(head:find("415", 1, true), "a non-IPP content type is refused: " .. head:s
 check(responses == 1, "the refusal is sent once, got " .. responses)
 
 -- Stopping withdraws the service ------------------------------------------------
-KoPrinter.stop()
-check(not KoPrinter.isRunning() and #zmqs == 0, "stopped")
+KOPrinter.stop()
+check(not KOPrinter.isRunning() and #zmqs == 0, "stopped")
 services = {}
 plugin:onMDNSCollectServices(services)
 check(#services == 0, "nothing advertised once stopped")
@@ -364,26 +364,26 @@ check(broadcast[#broadcast] == "onMDNSServicesChanged", "asked mDNS to withdraw 
 
 -- Network and power events -------------------------------------------------------
 plugin:onNetworkConnected()
-check(KoPrinter.isRunning(), "restarted when the network comes back: " .. KoPrinter.statusText())
+check(KOPrinter.isRunning(), "restarted when the network comes back: " .. KOPrinter.statusText())
 plugin:onSuspend()
-check(not KoPrinter.isRunning(), "stopped on suspend")
+check(not KOPrinter.isRunning(), "stopped on suspend")
 plugin:onResume()
 check(#scheduled >= 1 and scheduled[#scheduled].delay == 2, "resume schedules a retry")
 network.connected = false
 scheduled[#scheduled].fn()
-check(not KoPrinter.isRunning() and scheduled[#scheduled].delay == 5, "retry chain continues while offline")
+check(not KOPrinter.isRunning() and scheduled[#scheduled].delay == 5, "retry chain continues while offline")
 network.connected = true
 scheduled[#scheduled].fn()
-check(KoPrinter.isRunning(), "started once the network is back")
+check(KOPrinter.isRunning(), "started once the network is back")
 
 -- The Kindle firewall is opened for the IPP port and closed again -----------------
-KoPrinter.stop()
+KOPrinter.stop()
 device.isKindle = function() return true end
-KoPrinter.start()
+KOPrinter.start()
 check(executed[#executed]:find("iptables %-I INPUT %-i wlan0 %-p tcp %-%-dport " .. PORT .. " %-j ACCEPT"),
       "firewall opened for the IPP port: " .. tostring(executed[#executed]))
 zmqs[1].stop(zmqs[1]) -- what UIManager:quit() does
-check(not KoPrinter.isRunning(), "stopped on quit")
+check(not KOPrinter.isRunning(), "stopped on quit")
 check(executed[#executed]:find("iptables %-D INPUT") ~= nil,
       "firewall closed on quit: " .. tostring(executed[#executed]))
 device.isKindle = function() return false end
@@ -395,15 +395,15 @@ assert(squatter:setoption("reuseaddr", true))
 assert(squatter:bind("0.0.0.0", BUSY_PORT))
 assert(squatter:listen(1))
 G_reader_settings.store.koprinter.port = BUSY_PORT
-KoPrinter.start()
-check(KoPrinter.isRunning(), "started despite the configured port being taken: " .. KoPrinter.statusText())
+KOPrinter.start()
+check(KOPrinter.isRunning(), "started despite the configured port being taken: " .. KOPrinter.statusText())
 check(zmqs[1] ~= nil, "registered again after the fallback")
 services = {}
 plugin:onMDNSCollectServices(services)
 check(services[1] and services[1].port == 8631,
       "advertises the port it actually got: " .. tostring(services[1] and services[1].port))
 squatter:close()
-KoPrinter.stop()
+KOPrinter.stop()
 
 os.execute = nil
 print(string.format("%s: %d checks, %d failures", arg[0], checks, failures))

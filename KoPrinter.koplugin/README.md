@@ -1,4 +1,4 @@
-# KoPrinter: print to your KOReader screen
+# KOPrinter: print to your KOReader screen
 
 Exposes a KOReader device as an IPP printer on the local network. Add it on a
 computer or phone like any other printer, print a document, and it opens in
@@ -15,25 +15,25 @@ than any raster format the printer could receive instead.
 
 ## Installation
 
-Copy both `KoPrinter.koplugin` and `mDNS.koplugin` into the `plugins`
+Copy both `KOPrinter.koplugin` and `mDNS.koplugin` into the `plugins`
 directory of your KOReader installation (`/mnt/us/koreader/plugins/` on a
 Kindle) and restart KOReader. The mDNS responder plugin is what makes the
-printer appear in printer lists; KoPrinter registers its service with it.
+printer appear in printer lists; KOPrinter registers its service with it.
 
-The menu entry is in **Network ▸ KoPrinter (IPP printer)**:
+The menu entry is in **Network ▸ KOPrinter (IPP printer)**:
 
-- **Enable KoPrinter**: master switch, on by default.
+- **Enable KOPrinter**: master switch, on by default.
 - Status line: tap it for the page size, address and counters.
 - **Printer name**: what the printer list shows, `KOReader on <model>` by default.
 - **Port**: 631 by default; 8631 is used when that one cannot be bound.
 - **Open received documents immediately**: on by default. When off, an incoming
   document is only announced and stays in the spool folder.
 
-Received documents are saved under `KoPrinter/` in the KOReader library
-folder (`/mnt/us/documents/KoPrinter/` on a Kindle), named after the date and
+Received documents are saved under `KOPrinter/` in the KOReader library
+folder (`/mnt/us/documents/KOPrinter/` on a Kindle), named after the date and
 the job title.
 
-A `Toggle KoPrinter` action is available for gestures and profiles.
+A `Toggle KOPrinter` action is available for gestures and profiles.
 
 ## Printing from a computer
 

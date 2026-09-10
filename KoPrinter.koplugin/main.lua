@@ -1,5 +1,5 @@
 --[[--
-KoPrinter: the KOReader screen as an IPP printer.
+KOPrinter: the KOReader screen as an IPP printer.
 
 Advertises an IPP printer whose page size is the screen itself, accepts PDF
 print jobs from any computer or phone on the network, and opens what it
@@ -12,7 +12,7 @@ plugin: only one responder can hold UDP port 5353, so this plugin declares
 its service through the `MDNSCollectServices` event instead of running a
 second one.
 
-@module koplugin.KoPrinter
+@module koplugin.KOPrinter
 --]]
 
 local Device = require("device")
@@ -36,7 +36,7 @@ local DEFAULT_PORT = 631
 -- Ports below 1024 need root, which KOReader has on a Kindle but not on a
 -- computer or on Android; the SRV record carries whatever port we get.
 local FALLBACK_PORT = 8631
-local SPOOL_SUBDIR = "KoPrinter"
+local SPOOL_SUBDIR = "KOPrinter"
 local MAX_CONSECUTIVE_ERRORS = 10
 -- Delays (seconds) of the start attempts after a resume, when no network
 -- event tells us that the connection is back.
@@ -183,29 +183,29 @@ local plugin_logger = {
 -- Plugin
 -------------------------------------------------------------------------------
 
-local KoPrinter = WidgetContainer:extend{
-    name = "KoPrinter",
+local KOPrinter = WidgetContainer:extend{
+    name = "KOPrinter",
     is_doc_only = false,
 }
 
-function KoPrinter:init()
+function KOPrinter:init()
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
-    if KoPrinter.isEnabled() then
+    if KOPrinter.isEnabled() then
         -- Wait until every plugin is loaded: the mDNS responder may be starting.
-        UIManager:nextTick(KoPrinter.startIfPossible)
+        UIManager:nextTick(KOPrinter.startIfPossible)
     end
 end
 
-function KoPrinter.isEnabled()
+function KOPrinter.isEnabled()
     return settings.enabled ~= false
 end
 
-function KoPrinter.isRunning()
+function KOPrinter.isRunning()
     return server ~= nil and server:isRunning()
 end
 
-function KoPrinter.opensOnReceive()
+function KOPrinter.opensOnReceive()
     return settings.open_on_receive ~= false
 end
 
@@ -219,10 +219,10 @@ end
 local function handleJob(job)
     UIManager:nextTick(function()
         if lfs.attributes(job.path, "mode") ~= "file" then
-            logger.err("KoPrinter: received document vanished:", job.path)
+            logger.err("KOPrinter: received document vanished:", job.path)
             return
         end
-        if not KoPrinter.opensOnReceive() then
+        if not KOPrinter.opensOnReceive() then
             UIManager:show(InfoMessage:new{
                 text = T(_("Document received:\n%1"), job.name),
                 timeout = 3,
@@ -233,7 +233,7 @@ local function handleJob(job)
             require("apps/reader/readerui"):showReader(job.path)
         end)
         if not ok then
-            logger.err("KoPrinter: cannot open the received document:", err)
+            logger.err("KOPrinter: cannot open the received document:", err)
             UIManager:show(InfoMessage:new{
                 text = T(_("Received a document but cannot open it:\n%1"), job.path),
             })
@@ -283,10 +283,10 @@ local function poll()
     local ok, err = pcall(server.poll, server)
     if not ok then
         consecutive_errors = consecutive_errors + 1
-        logger.err("KoPrinter: poll error:", err)
+        logger.err("KOPrinter: poll error:", err)
         if consecutive_errors >= MAX_CONSECUTIVE_ERRORS then
-            logger.err("KoPrinter: too many errors, stopping the IPP server")
-            KoPrinter.stop()
+            logger.err("KOPrinter: too many errors, stopping the IPP server")
+            KOPrinter.stop()
         end
         return nil
     end
@@ -294,14 +294,14 @@ local function poll()
     return nil
 end
 
-function KoPrinter.start()
-    if KoPrinter.isRunning() then
+function KOPrinter.start()
+    if KOPrinter.isRunning() then
         return true
     end
     local spool, spool_err = ensureSpoolDir()
     if not spool then
         last_error = spool_err
-        logger.err("KoPrinter:", spool_err)
+        logger.err("KOPrinter:", spool_err)
         return nil, spool_err
     end
 
@@ -335,26 +335,26 @@ function KoPrinter.start()
             zmq_adapter = {
                 waitEvent = poll,
                 -- UIManager:quit() calls this on exit.
-                stop = KoPrinter.stop,
+                stop = KOPrinter.stop,
             }
             UIManager:insertZMQ(zmq_adapter)
             -- Let the mDNS responder announce the printer right away.
             UIManager:broadcastEvent(Event:new("MDNSServicesChanged"))
-            logger.info(string.format("KoPrinter: printing to %s on port %d, spooling into %s",
+            logger.info(string.format("KOPrinter: printing to %s on port %d, spooling into %s",
                 printer.media_name, port, spool))
             return true
         end
         closeFirewall(interface, port)
         server = nil
         printer = nil
-        logger.warn("KoPrinter:", err)
+        logger.warn("KOPrinter:", err)
     end
 
     last_error = err
     return nil, err
 end
 
-function KoPrinter.stop()
+function KOPrinter.stop()
     if zmq_adapter then
         UIManager:removeZMQ(zmq_adapter)
         zmq_adapter = nil
@@ -371,29 +371,29 @@ function KoPrinter.stop()
     end
 end
 
-function KoPrinter.restart()
-    KoPrinter.stop()
-    return KoPrinter.start()
+function KOPrinter.restart()
+    KOPrinter.stop()
+    return KOPrinter.start()
 end
 
-function KoPrinter.startIfPossible()
-    if not KoPrinter.isEnabled() or KoPrinter.isRunning() then
+function KOPrinter.startIfPossible()
+    if not KOPrinter.isEnabled() or KOPrinter.isRunning() then
         return
     end
     if not NetworkMgr:isConnected() then
-        logger.dbg("KoPrinter: no network, not starting")
+        logger.dbg("KOPrinter: no network, not starting")
         return
     end
-    KoPrinter.start()
+    KOPrinter.start()
 end
 
 --- Retries after a resume, when no network event announces the connection.
-function KoPrinter.scheduleStart()
+function KOPrinter.scheduleStart()
     resume_retry = 0
     local function attempt()
         resume_retry = resume_retry + 1
-        KoPrinter.startIfPossible()
-        if not KoPrinter.isRunning() and RESUME_RETRY_DELAYS[resume_retry + 1] then
+        KOPrinter.startIfPossible()
+        if not KOPrinter.isRunning() and RESUME_RETRY_DELAYS[resume_retry + 1] then
             UIManager:scheduleIn(RESUME_RETRY_DELAYS[resume_retry + 1], attempt)
         end
     end
@@ -406,8 +406,8 @@ end
 
 --- The mDNS responder asks every plugin what to advertise. Answering with
 -- nothing while the server is down withdraws the printer.
-function KoPrinter:onMDNSCollectServices(services)
-    if not KoPrinter.isRunning() then
+function KOPrinter:onMDNSCollectServices(services)
+    if not KOPrinter.isRunning() then
         return
     end
     services[#services + 1] = {
@@ -418,55 +418,55 @@ function KoPrinter:onMDNSCollectServices(services)
     }
 end
 
-function KoPrinter:onNetworkConnected()
-    UIManager:nextTick(KoPrinter.startIfPossible)
+function KOPrinter:onNetworkConnected()
+    UIManager:nextTick(KOPrinter.startIfPossible)
 end
 
-function KoPrinter:onNetworkDisconnecting()
-    KoPrinter.stop()
+function KOPrinter:onNetworkDisconnecting()
+    KOPrinter.stop()
 end
 
-function KoPrinter:onNetworkDisconnected()
-    KoPrinter.stop()
+function KOPrinter:onNetworkDisconnected()
+    KOPrinter.stop()
 end
 
-function KoPrinter:onSuspend()
-    KoPrinter.stop()
+function KOPrinter:onSuspend()
+    KOPrinter.stop()
 end
 
-function KoPrinter:onEnterStandby()
-    KoPrinter.stop()
+function KOPrinter:onEnterStandby()
+    KOPrinter.stop()
 end
 
-function KoPrinter:onResume()
-    KoPrinter.scheduleStart()
+function KOPrinter:onResume()
+    KOPrinter.scheduleStart()
 end
 
-function KoPrinter:onLeaveStandby()
-    UIManager:nextTick(KoPrinter.startIfPossible)
+function KOPrinter:onLeaveStandby()
+    UIManager:nextTick(KOPrinter.startIfPossible)
 end
 
-function KoPrinter:onToggleKoPrinter()
-    settings.enabled = not KoPrinter.isEnabled()
+function KOPrinter:onToggleKOPrinter()
+    settings.enabled = not KOPrinter.isEnabled()
     saveSettings()
-    if KoPrinter.isEnabled() then
-        KoPrinter.startIfPossible()
+    if KOPrinter.isEnabled() then
+        KOPrinter.startIfPossible()
     else
-        KoPrinter.stop()
+        KOPrinter.stop()
     end
     UIManager:show(InfoMessage:new{
-        text = KoPrinter.isRunning() and T(_("Printer available: %1"), printerName())
+        text = KOPrinter.isRunning() and T(_("Printer available: %1"), printerName())
             or _("Printer switched off"),
         timeout = 2,
     })
     return true
 end
 
-function KoPrinter:onDispatcherRegisterActions()
+function KOPrinter:onDispatcherRegisterActions()
     Dispatcher:registerAction("toggle_koprinter", {
         category = "none",
-        event = "ToggleKoPrinter",
-        title = _("Toggle KoPrinter"),
+        event = "ToggleKOPrinter",
+        title = _("Toggle KOPrinter"),
         general = true,
     })
 end
@@ -475,11 +475,11 @@ end
 -- Menu
 -------------------------------------------------------------------------------
 
-function KoPrinter.statusText()
-    if not KoPrinter.isEnabled() then
+function KOPrinter.statusText()
+    if not KOPrinter.isEnabled() then
         return _("Off")
     end
-    if not KoPrinter.isRunning() then
+    if not KOPrinter.isRunning() then
         return last_error and T(_("Not running: %1"), last_error) or _("Not running")
     end
     local w, h = printer:sizeMM()
@@ -487,7 +487,7 @@ function KoPrinter.statusText()
         server.port, string.format("%.0f", w), string.format("%.0f", h))
 end
 
-function KoPrinter.detailsText()
+function KOPrinter.detailsText()
     local lines = {}
     local function add(label, value)
         lines[#lines + 1] = label .. ": " .. tostring(value)
@@ -516,13 +516,13 @@ function KoPrinter.detailsText()
     end
     lines[#lines + 1] = ""
     lines[#lines + 1] = _("Documents arrive as PDF, laid out to the size of the screen.")
-    if not KoPrinter.isRunning() then
+    if not KOPrinter.isRunning() then
         lines[#lines + 1] = _("The mDNS responder plugin must be enabled for the printer to be found.")
     end
     return table.concat(lines, "\n")
 end
 
-function KoPrinter:showPrinterNameDialog(touchmenu_instance)
+function KOPrinter:showPrinterNameDialog(touchmenu_instance)
     local dialog
     dialog = InputDialog:new{
         title = _("Printer name"),
@@ -538,8 +538,8 @@ function KoPrinter:showPrinterNameDialog(touchmenu_instance)
                     UIManager:close(dialog)
                     settings.printer_name = name ~= "" and name or nil
                     saveSettings()
-                    if KoPrinter.isRunning() then
-                        KoPrinter.restart()
+                    if KOPrinter.isRunning() then
+                        KOPrinter.restart()
                     end
                     if touchmenu_instance then
                         touchmenu_instance:updateItems()
@@ -552,7 +552,7 @@ function KoPrinter:showPrinterNameDialog(touchmenu_instance)
     dialog:onShowKeyboard()
 end
 
-function KoPrinter:showPortDialog(touchmenu_instance)
+function KOPrinter:showPortDialog(touchmenu_instance)
     local dialog
     dialog = InputDialog:new{
         title = _("IPP port"),
@@ -571,8 +571,8 @@ function KoPrinter:showPortDialog(touchmenu_instance)
                     if port and port >= 1 and port <= 65535 then
                         settings.port = port
                         saveSettings()
-                        if KoPrinter.isRunning() then
-                            KoPrinter.restart()
+                        if KOPrinter.isRunning() then
+                            KOPrinter.restart()
                         end
                     end
                     if touchmenu_instance then
@@ -586,23 +586,23 @@ function KoPrinter:showPortDialog(touchmenu_instance)
     dialog:onShowKeyboard()
 end
 
-function KoPrinter:addToMainMenu(menu_items)
+function KOPrinter:addToMainMenu(menu_items)
     menu_items.koprinter = {
-        text = _("KoPrinter (IPP printer)"),
+        text = _("KOPrinter (IPP printer)"),
         sorting_hint = "network",
         sub_item_table = {
             {
-                text = _("Enable KoPrinter"),
-                checked_func = KoPrinter.isEnabled,
+                text = _("Enable KOPrinter"),
+                checked_func = KOPrinter.isEnabled,
                 callback = function()
-                    self:onToggleKoPrinter()
+                    self:onToggleKOPrinter()
                 end,
             },
             {
-                text_func = KoPrinter.statusText,
+                text_func = KOPrinter.statusText,
                 keep_menu_open = true,
                 callback = function()
-                    UIManager:show(InfoMessage:new{ text = KoPrinter.detailsText() })
+                    UIManager:show(InfoMessage:new{ text = KOPrinter.detailsText() })
                 end,
             },
             {
@@ -627,9 +627,9 @@ function KoPrinter:addToMainMenu(menu_items)
             {
                 text = _("Open received documents immediately"),
                 help_text = _("When off, an incoming document is only announced, and stays in the spool folder."),
-                checked_func = KoPrinter.opensOnReceive,
+                checked_func = KOPrinter.opensOnReceive,
                 callback = function()
-                    settings.open_on_receive = not KoPrinter.opensOnReceive()
+                    settings.open_on_receive = not KOPrinter.opensOnReceive()
                     saveSettings()
                 end,
             },
@@ -637,4 +637,4 @@ function KoPrinter:addToMainMenu(menu_items)
     }
 end
 
-return KoPrinter
+return KOPrinter

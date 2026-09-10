@@ -9,7 +9,7 @@ Documents are streamed straight to a spool file as the bytes arrive instead
 of being buffered, because a print job can be tens of megabytes and an
 e-reader has little memory to spare.
 
-@module koplugin.KoPrinter.ipp_server
+@module koplugin.KOPrinter.ipp_server
 --]]
 
 local IPP = require("ipp_message")
@@ -93,7 +93,7 @@ function Server:start()
     end
     local reused, reuse_err = listener:setoption("reuseaddr", true)
     if not reused then
-        self.logger.warn("KoPrinter: cannot set SO_REUSEADDR: " .. tostring(reuse_err))
+        self.logger.warn("KOPrinter: cannot set SO_REUSEADDR: " .. tostring(reuse_err))
     end
     local ok, bind_err = listener:bind(self.address == "*" and "0.0.0.0" or self.address, self.port)
     if not ok then
@@ -108,7 +108,7 @@ function Server:start()
     listener:settimeout(0)
     self.listener = listener
     self.printer.start_time = self.clock()
-    self.logger.info(string.format("KoPrinter: IPP server listening on %s:%d", self.address, self.port))
+    self.logger.info(string.format("KOPrinter: IPP server listening on %s:%d", self.address, self.port))
     return true
 end
 
@@ -121,7 +121,7 @@ function Server:stop()
     if self.listener then
         self.listener:close()
         self.listener = nil
-        self.logger.info("KoPrinter: IPP server stopped")
+        self.logger.info("KOPrinter: IPP server stopped")
     end
 end
 
@@ -523,7 +523,7 @@ function Server:serviceConnection(conn, now)
             end
             local ok, handle_err = self:handleRequest(conn)
             if not ok then
-                self.logger.warn("KoPrinter: " .. tostring(handle_err))
+                self.logger.warn("KOPrinter: " .. tostring(handle_err))
                 self:respond(conn, 400, "text/plain", "Bad request\n")
                 conn.keep_alive = false
                 break
@@ -533,7 +533,7 @@ function Server:serviceConnection(conn, now)
             local ok, body_err = self:readBody(conn)
             if not ok then
                 self.stats.errors = self.stats.errors + 1
-                self.logger.warn("KoPrinter: " .. tostring(body_err))
+                self.logger.warn("KOPrinter: " .. tostring(body_err))
                 self:respond(conn, 400, "text/plain", "Bad request\n")
                 conn.keep_alive = false
                 break
@@ -559,7 +559,7 @@ function Server:serviceConnection(conn, now)
         return conn.outbox ~= "" or conn.phase == "body"
     end
     if now - conn.last_activity > IDLE_TIMEOUT then
-        self.logger.dbg("KoPrinter: dropping idle connection")
+        self.logger.dbg("KOPrinter: dropping idle connection")
         return false
     end
     return true
@@ -578,7 +578,7 @@ function Server:poll()
         local ok, keep = pcall(self.serviceConnection, self, conn, now)
         if not ok then
             self.stats.errors = self.stats.errors + 1
-            self.logger.err("KoPrinter: connection error: " .. tostring(keep))
+            self.logger.err("KOPrinter: connection error: " .. tostring(keep))
             keep = false
         end
         if keep then
@@ -685,12 +685,12 @@ function Server:completeJob(job, bytes)
     job.completed = self.clock()
     self.printer.queued_job_count = math.max(self.printer.queued_job_count - 1, 0)
     self.stats.jobs = self.stats.jobs + 1
-    self.logger.info(string.format("KoPrinter: job %d received, %d bytes: %s",
+    self.logger.info(string.format("KOPrinter: job %d received, %d bytes: %s",
         job.id, bytes, tostring(job.path)))
     if self.on_job then
         local ok, err = pcall(self.on_job, job)
         if not ok then
-            self.logger.err("KoPrinter: job handler failed: " .. tostring(err))
+            self.logger.err("KOPrinter: job handler failed: " .. tostring(err))
         end
     end
 end
@@ -882,12 +882,12 @@ end
 -- straight away.
 function Server:dispatch(conn, request)
     local op = request.operation_id
-    self.logger.dbg(string.format("KoPrinter: %s (request-id %d)",
+    self.logger.dbg(string.format("KOPrinter: %s (request-id %d)",
         IPP.operationName(op), request.request_id or 0))
 
     local rejection = validateRequest(request)
     if rejection then
-        self.logger.dbg(string.format("KoPrinter: rejecting %s with status 0x%04X",
+        self.logger.dbg(string.format("KOPrinter: rejecting %s with status 0x%04X",
             IPP.operationName(op), rejection))
         conn.response = newResponse(request, rejection)
         return true

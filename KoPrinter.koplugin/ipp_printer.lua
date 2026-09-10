@@ -11,7 +11,7 @@ make macOS rasterise the job, and KOReader renders PDF natively and better.
 The module takes a plain spec table rather than reaching into KOReader, so it
 can be exercised without a device.
 
-@module koplugin.KoPrinter.ipp_printer
+@module koplugin.KOPrinter.ipp_printer
 --]]
 
 local IPP = require("ipp_message")

@@ -15,7 +15,7 @@ and collection values (RFC 8010 §3.1.6) as:
 
 so that a decoded message re-encodes to the same bytes.
 
-@module koplugin.KoPrinter.ipp_message
+@module koplugin.KOPrinter.ipp_message
 --]]
 
 local bit = require("bit")
