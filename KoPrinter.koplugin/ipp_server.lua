@@ -13,6 +13,7 @@ e-reader has little memory to spare.
 --]]
 
 local IPP = require("ipp_message")
+local Urf = require("urf")
 
 local Server = {}
 Server.__index = Server
@@ -205,10 +206,32 @@ local function httpResponse(status, content_type, body, keep_alive)
     })
 end
 
+local function hexPrefix(data, n)
+    local bytes = {}
+    for i = 1, math.min(n or 24, #data) do
+        bytes[#bytes + 1] = string.format("%02X", data:byte(i))
+    end
+    return table.concat(bytes, " ")
+end
+
+--- End of the HTTP header block. iOS sometimes uses LF-only separators.
+local function splitHead(inbox)
+    local crlf = inbox:find("\r\n\r\n", 1, true)
+    if crlf then
+        return inbox:sub(1, crlf + 3), inbox:sub(crlf + 4)
+    end
+    local lf = inbox:find("\n\n", 1, true)
+    if lf then
+        return inbox:sub(1, lf + 1), inbox:sub(lf + 2)
+    end
+    return nil, inbox
+end
+
 --- Parses the request line and headers. Header names are lowercased.
 local function parseHead(head)
+    head = head:gsub("\r\n", "\n"):gsub("\r", "\n")
     local lines = {}
-    for line in head:gmatch("([^\r\n]*)\r\n") do
+    for line in head:gmatch("([^\n]*)\n") do
         lines[#lines + 1] = line
     end
     local method, path, version = (lines[1] or ""):match("^(%u+)%s+(%S+)%s+HTTP/(%d%.%d)$")
@@ -276,7 +299,14 @@ function Server:handleRequest(conn)
     end
 
     local content_type = (request.headers["content-type"] or ""):lower()
-    if not content_type:find("application/ipp", 1, true) then
+    -- iOS AirPrint has been seen to omit the type or send octet-stream.
+    local ipp_body = content_type == ""
+        or content_type:find("ipp", 1, true)
+        or content_type:find("octet-stream", 1, true)
+        or content_type:find("urf", 1, true)
+    if not ipp_body then
+        self.logger.warn("KOPrinter: refused " .. request.method .. " "
+            .. tostring(request.path) .. " Content-Type=" .. content_type)
         return self:respond(conn, 415, "text/plain", "Expected application/ipp\n")
     end
     -- The body is consumed by readBody, which calls handleIPP when the
@@ -467,7 +497,11 @@ function Server:acceptConnections(now)
         end
         sock:settimeout(0)
         sock:setoption("tcp-nodelay", true)
-        self.connections[#self.connections + 1] = newConnection(sock, now)
+        local conn = newConnection(sock, now)
+        local ip, port = sock:getpeername()
+        conn.peer = ip and string.format("%s:%s", ip, tostring(port)) or "?"
+        self.logger.info("KOPrinter: client " .. conn.peer)
+        self.connections[#self.connections + 1] = conn
     end
 end
 
@@ -475,6 +509,19 @@ function Server:serviceConnection(conn, now)
     local data, err, partial = conn.sock:receive(READ_CHUNK)
     local received = data or partial
     if received and #received > 0 then
+        if not conn.hello_logged then
+            conn.hello_logged = true
+            local first = received:byte(1)
+            if first == 0x16 then
+                self.logger.warn("KOPrinter: TLS handshake from " .. (conn.peer or "?")
+                    .. " — iOS is trying IPPS on a plain IPP port")
+            elseif received:sub(1, 3) == "PRI" then
+                self.logger.warn("KOPrinter: HTTP/2 preface from " .. (conn.peer or "?"))
+            else
+                self.logger.info(string.format("KOPrinter: %s hello %d bytes [%s]",
+                    conn.peer or "?", #received, hexPrefix(received, 24)))
+            end
+        end
         conn.inbox = conn.inbox .. received
         conn.last_activity = now
     end
@@ -482,22 +529,25 @@ function Server:serviceConnection(conn, now)
 
     while true do
         if conn.phase == "headers" then
-            local head_end = conn.inbox:find("\r\n\r\n", 1, true)
-            if not head_end then
+            local head
+            head, conn.inbox = splitHead(conn.inbox)
+            if not head then
                 if #conn.inbox > MAX_HEADER_SIZE then
                     self:respond(conn, 413, "text/plain", "Headers too large\n")
                     conn.keep_alive = false
                 end
                 break
             end
-            local head = conn.inbox:sub(1, head_end + 3)
-            conn.inbox = conn.inbox:sub(head_end + 4)
             local request = parseHead(head)
             if not request then
+                self.logger.warn("KOPrinter: malformed HTTP from "
+                    .. (conn.peer or "?") .. " [" .. hexPrefix(head, 32) .. "]")
                 self:respond(conn, 400, "text/plain", "Malformed request\n")
                 conn.keep_alive = false
                 break
             end
+            self.logger.info(string.format("KOPrinter: %s %s %s",
+                request.method, request.path, request.headers["content-type"] or "-"))
             conn.request = request
             conn.keep_alive = (request.version == "1.1")
                 and (request.headers["connection"] or ""):lower() ~= "close"
@@ -635,7 +685,15 @@ end
 
 --- Opens the spool file a job's document will be streamed into.
 function Server:openSpoolFile(conn, job)
-    local extension = job.format == "application/pdf" and "pdf" or "bin"
+    local format = (job.format or ""):lower()
+    local extension = "bin"
+    if format == "application/pdf" then
+        extension = "pdf"
+    elseif format:find("urf", 1, true) then
+        extension = "urf"
+    elseif format:find("jpeg", 1, true) then
+        extension = "jpg"
+    end
     local stamp = os.date("%Y-%m-%d_%H-%M-%S", job.created)
     local base = string.format("%s/%s %s", self.spool_dir, stamp, job.name)
     local path = base .. "." .. extension
@@ -673,6 +731,19 @@ function Server:completeJob(job, bytes)
     job.completed = self.clock()
     self.printer.queued_job_count = math.max(self.printer.queued_job_count - 1, 0)
     self.stats.jobs = self.stats.jobs + 1
+    if job.path then
+        local converted, conv_err = Urf.convertFile(job.path)
+        if not converted then
+            job.error = conv_err or "cannot decode the received document"
+            self.logger.err("KOPrinter: cannot prepare job " .. job.id .. ": " .. job.error)
+        elseif converted ~= job.path then
+            os.remove(job.path)
+            job.path = converted
+            job.format = "application/pdf"
+            self.logger.info(string.format("KOPrinter: job %d converted URF to PDF: %s",
+                job.id, job.path))
+        end
+    end
     self.logger.info(string.format("KOPrinter: job %d received, %d bytes: %s",
         job.id, bytes, tostring(job.path)))
     if self.on_job then
@@ -807,7 +878,10 @@ local function formatSupported(format)
         return true
     end
     format = format:lower()
-    return format == "application/pdf" or format == "application/octet-stream"
+    return format == "application/pdf"
+        or format == "application/octet-stream"
+        or format == "image/urf"
+        or format == "image/jpeg"
 end
 
 local SUPPORTED_VERSIONS = { ["1.0"] = true, ["1.1"] = true, ["2.0"] = true }
@@ -850,7 +924,8 @@ local function validateRequest(request)
         or language.tag ~= IPP.TAG_NATURAL_LANGUAGE then
         return IPP.ERR_BAD_REQUEST
     end
-    if tostring(charset.values[1] or ""):lower() ~= "utf-8" then
+    local cs = tostring(charset.values[1] or ""):lower()
+    if cs ~= "utf-8" and cs ~= "us-ascii" then
         return IPP.ERR_CHARSET_NOT_SUPPORTED
     end
     -- §4.2: the target must be identified.
@@ -870,27 +945,44 @@ end
 -- straight away.
 function Server:dispatch(conn, request)
     local op = request.operation_id
-    self.logger.dbg(string.format("KOPrinter: %s (request-id %d)",
-        IPP.operationName(op), request.request_id or 0))
+    local requested = {}
+    for _, value in ipairs(IPP.getValues(request, "requested-attributes")) do
+        requested[#requested + 1] = tostring(value)
+    end
+    self.logger.info(string.format("KOPrinter: %s (request-id %d) format=%s uri=%s requested=%s",
+        IPP.operationName(op), request.request_id or 0,
+        tostring(IPP.getValue(request, "document-format") or "-"),
+        tostring(IPP.getValue(request, "printer-uri") or "-"),
+        #requested > 0 and table.concat(requested, ",") or "-"))
 
     local rejection = validateRequest(request)
     if rejection then
-        self.logger.dbg(string.format("KOPrinter: rejecting %s with status 0x%04X",
+        self.logger.warn(string.format("KOPrinter: rejecting %s with status 0x%04X",
             IPP.operationName(op), rejection))
         conn.response = newResponse(request, rejection)
         return true
     end
 
-    local requested = {}
-    for _, value in ipairs(IPP.getValues(request, "requested-attributes")) do
-        requested[#requested + 1] = tostring(value)
-    end
-
     if op == IPP.OP_GET_PRINTER_ATTRIBUTES then
+        local attrs = self.printer:selectAttributes(requested, self.clock())
+        local have = {}
+        for _, attr in ipairs(attrs) do
+            have[attr.name] = true
+        end
+        local missing = {}
+        for _, name in ipairs(requested) do
+            if name ~= "all" and name ~= "printer-description" and name ~= "job-template"
+                and not have[name] then
+                missing[#missing + 1] = name
+            end
+        end
+        if #missing > 0 then
+            self.logger.info("KOPrinter: GPA omitted " .. table.concat(missing, ","))
+        end
         local response = newResponse(request, IPP.OK)
         response.groups[#response.groups + 1] = {
             tag = IPP.TAG_PRINTER_ATTRIBUTES,
-            attributes = self.printer:selectAttributes(requested, self.clock()),
+            attributes = attrs,
         }
         conn.response = response
     elseif op == IPP.OP_VALIDATE_JOB then
@@ -935,6 +1027,14 @@ function Server:dispatch(conn, request)
             local name = IPP.getValue(request, "document-name")
             if type(name) == "string" and name ~= "" then
                 job.name = sanitizeFilename(name)
+            end
+            local format = IPP.getValue(request, "document-format")
+            if type(format) == "string" and format ~= "" then
+                if not formatSupported(format) then
+                    conn.response = newResponse(request, IPP.ERR_DOCUMENT_FORMAT_NOT_SUPPORTED)
+                    return true
+                end
+                job.format = format
             end
             local ok, err = self:openSpoolFile(conn, job)
             if not ok then

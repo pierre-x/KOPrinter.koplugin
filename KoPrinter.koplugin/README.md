@@ -110,9 +110,8 @@ ipptool -tv -f document.pdf ipp://127.0.0.1:8631/ipp/print \
 
 ## Limitations
 
-- PDF only at the IPP layer. The Bonjour record also lists `image/urf` so
-  that macOS auto-selects AirPrint instead of asking for a driver; jobs are
-  still accepted as PDF.
+- macOS sends PDF. iOS AirPrint sends Apple Raster (`image/urf`), which is
+  decoded to a grayscale PDF before KOReader opens it.
 - No TLS (`ipps`): the printer is meant for a home network.
 - One document per job (`multiple-document-jobs-supported` is false).
 - The printer is unreachable while the device sleeps, since Wi-Fi is off.

@@ -100,6 +100,19 @@ local function defaultPrinterName()
     return T(_("KOReader on %1"), deviceModel())
 end
 
+local function mdnsHostname()
+    local mdns = G_reader_settings:readSetting("mdns")
+    if type(mdns) == "table" and type(mdns.hostname) == "string" and mdns.hostname ~= "" then
+        return mdns.hostname
+    end
+    local name = tostring(Device.model or ""):lower()
+    name = name:gsub("[^a-z0-9-]", "-"):gsub("-+", "-"):gsub("^-", ""):gsub("-$", "")
+    if name == "" then
+        name = "koreader"
+    end
+    return name
+end
+
 local function printerName()
     local name = settings.printer_name
     if type(name) ~= "string" or name:gsub("%s", "") == "" then
@@ -236,7 +249,14 @@ end
 -- down and rebuilds the UI, including this very plugin instance.
 local function handleJob(job)
     UIManager:nextTick(function()
-        if lfs.attributes(job.path, "mode") ~= "file" then
+        if job.error then
+            logger.err("KOPrinter: received document cannot be opened:", job.error)
+            UIManager:show(InfoMessage:new{
+                text = T(_("Received a document but cannot open it:\n%1"), job.error),
+            })
+            return
+        end
+        if not job.path or lfs.attributes(job.path, "mode") ~= "file" then
             logger.err("KOPrinter: received document vanished:", job.path)
             return
         end
@@ -289,7 +309,7 @@ local function buildPrinter(port)
         dpi = dpi,
         color = hasColorScreen(),
         port = port,
-        host = Device.model and (Device.model:lower():gsub("[^%w-]", "-") .. ".local") or "localhost",
+        host = mdnsHostname() .. ".local",
     }
 end
 

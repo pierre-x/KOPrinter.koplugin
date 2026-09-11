@@ -5,8 +5,8 @@ The printer advertises a single page size equal to the physical size of the
 screen with no margins, so that a page laid out by the client is exactly one
 screenful: a 1072x1448 screen at 300 dpi becomes a 90.76 x 122.60 mm sheet.
 
-Only PDF is accepted. Claiming Apple Raster (`image/urf`) or PWG Raster would
-make macOS rasterise the job, and KOReader renders PDF natively and better.
+PDF is preferred. Apple Raster (`image/urf`) is accepted and decoded to
+PDF so iOS AirPrint jobs can be opened; macOS still sends PDF.
 
 The module takes a plain spec table rather than reaching into KOReader, so it
 can be exercised without a device.
@@ -130,6 +130,16 @@ function Printer.new(spec)
     self.media_height = toHundredthsMM(self.height_px, self.dpi)
     self.media_name = string.format("custom_koreader_%sx%smm",
         formatDimension(self.media_width), formatDimension(self.media_height))
+    -- iOS AirPrint will not send a job if the only size is a custom
+    -- self-describing name. A4 and Letter are always advertised as well.
+    self.media = {
+        { name = self.media_name, width = self.media_width, height = self.media_height },
+        { name = "iso_a4_210x297mm", width = 21000, height = 29700 },
+        { name = "na_letter_8.5x11in", width = 21590, height = 27940 },
+    }
+    -- iOS lays jobs out on A4/Letter. Advertising only the screen size as
+    -- default/ready makes AirPrint poll forever and never send Print-Job.
+    self.default_media = self.media[2]
 
     self.uuid = spec.uuid or uuidFromSeed(self.model .. ":" .. self.name .. ":"
         .. self.width_px .. "x" .. self.height_px)
@@ -157,28 +167,64 @@ function Printer:upTime(now)
 end
 
 --- The media-size collection: just the two dimensions.
-function Printer:mediaSizeCollection()
+function Printer:mediaSizeCollection(media)
+    media = media or self.media[1]
     return IPP.collection{
-        IPP.attr(IPP.TAG_INTEGER, "x-dimension", self.media_width),
-        IPP.attr(IPP.TAG_INTEGER, "y-dimension", self.media_height),
+        IPP.attr(IPP.TAG_INTEGER, "x-dimension", media.width),
+        IPP.attr(IPP.TAG_INTEGER, "y-dimension", media.height),
     }
 end
 
 --- The full media-col collection, for a given margin in hundredths of a
--- millimetre. The page is always the size of the screen; only the printable
--- area inside it changes.
-function Printer:mediaColCollection(margin)
+-- millimetre. The screen size is offered with a hairline margin (the
+-- default) and borderless; A4 and Letter use the same hairline margin.
+function Printer:mediaColCollection(margin, media)
     margin = margin or DEFAULT_MARGIN
+    media = media or self.media[1]
     return IPP.collection{
-        IPP.attr(IPP.TAG_BEG_COLLECTION, "media-size", self:mediaSizeCollection()),
-        IPP.attr(IPP.TAG_KEYWORD, "media-size-name", self.media_name),
+        IPP.attr(IPP.TAG_BEG_COLLECTION, "media-size", self:mediaSizeCollection(media)),
+        IPP.attr(IPP.TAG_KEYWORD, "media-size-name", media.name),
         IPP.attr(IPP.TAG_INTEGER, "media-bottom-margin", margin),
         IPP.attr(IPP.TAG_INTEGER, "media-left-margin", margin),
         IPP.attr(IPP.TAG_INTEGER, "media-right-margin", margin),
         IPP.attr(IPP.TAG_INTEGER, "media-top-margin", margin),
         IPP.attr(IPP.TAG_KEYWORD, "media-source", "auto"),
         IPP.attr(IPP.TAG_KEYWORD, "media-type", "stationery"),
+        IPP.attr(IPP.TAG_KEYWORD, "media-color", "white"),
     }
+end
+
+function Printer:mediaNames()
+    local names = {}
+    for _, media in ipairs(self.media) do
+        names[#names + 1] = media.name
+    end
+    return names
+end
+
+function Printer:mediaSizeCollections()
+    local sizes = {}
+    for _, media in ipairs(self.media) do
+        sizes[#sizes + 1] = self:mediaSizeCollection(media)
+    end
+    return sizes
+end
+
+function Printer:mediaColDatabase()
+    local cols = {
+        self:mediaColCollection(DEFAULT_MARGIN, self.media[1]),
+        self:mediaColCollection(0, self.media[1]),
+    }
+    for i = 2, #self.media do
+        cols[#cols + 1] = self:mediaColCollection(DEFAULT_MARGIN, self.media[i])
+    end
+    return cols
+end
+
+--- iOS prints from the ready list and gets confused when one tray claims
+-- several sizes, so only A4 is loaded.
+function Printer:mediaColReady()
+    return { self:mediaColCollection(DEFAULT_MARGIN, self.default_media) }
 end
 
 -------------------------------------------------------------------------------
@@ -189,7 +235,7 @@ end
 -- `requested-attributes` can select a subset.
 -- @treturn table list of { group = "printer-description"|"job-template", attr = <attribute> }
 function Printer:attributes(now)
-    local color_modes = self.color and { "auto", "color", "monochrome" } or { "monochrome" }
+    local color_modes = self.color and { "auto", "color", "monochrome" } or { "auto", "monochrome" }
     local out = {}
     local function add(group, attr)
         out[#out + 1] = { group = group, attr = attr }
@@ -212,9 +258,11 @@ function Printer:attributes(now)
     description(IPP.TAG_TEXT, "printer-make-and-model", "KOReader " .. self.model)
     description(IPP.TAG_URI, "printer-uuid", "urn:uuid:" .. self.uuid)
     description(IPP.TAG_TEXT, "printer-device-id",
-        string.format("MFG:KOReader;MDL:%s;CMD:PDF;DES:KOReader screen;", self.model))
+        string.format("MFG:KOReader;MDL:%s;CMD:PDF,URF,JPEG;DES:KOReader screen;", self.model))
     description(IPP.TAG_URI, "printer-more-info",
         string.format("http://%s:%d/", self.host, self.port))
+    description(IPP.TAG_TEXT, "mopria-certified", "1.3")
+    description(IPP.TAG_KEYWORD, "printer-kind", "document")
 
     -- State.
     description(IPP.TAG_ENUM, "printer-state", self.state)
@@ -245,31 +293,60 @@ function Printer:attributes(now)
     description(IPP.TAG_KEYWORD, "which-jobs-supported", { "completed", "not-completed", "all" })
     description(IPP.TAG_KEYWORD, "identify-actions-default", "display")
     description(IPP.TAG_KEYWORD, "identify-actions-supported", "display")
+    -- One tray named `auto`, loaded with A4. A dummy empty `auto` tray plus
+    -- several ready sizes on that source makes iOS poll forever.
+    description(IPP.TAG_OCTET_STRING, "printer-input-tray", string.format(
+        "type=sheetFeedAutoNonRemovableTray;mediafeed=%d;mediaxfeed=%d;"
+        .. "maxcapacity=1;level=-3;status=0;name=auto;",
+        self.default_media.height, self.default_media.width))
+    description(IPP.TAG_OCTET_STRING, "printer-output-tray",
+        "type=unRemovableBin;maxcapacity=1;remaining=-3;status=0;"
+        .. "name=face-up;stackingorder=firstToLast;pagedelivery=faceUp;")
+    description(IPP.TAG_BEG_COLLECTION, "finishings-col-database",
+        IPP.collection{ IPP.attr(IPP.TAG_KEYWORD, "finishing-template", "none") })
+    description(IPP.TAG_BEG_COLLECTION, "finishings-col-ready",
+        IPP.collection{ IPP.attr(IPP.TAG_KEYWORD, "finishing-template", "none") })
+    description(IPP.TAG_KEYWORD, "finishings-col-supported", "finishing-template")
+    description(IPP.TAG_KEYWORD, "finishing-template-supported", "none")
+    -- iOS asks for these on every status poll. Omitting them looks like
+    -- "unknown" rather than "none", and the print sheet never submits.
+    description(IPP.TAG_NO_VALUE, "printer-mandatory-job-attributes")
+    description(IPP.TAG_NO_VALUE, "job-presets-supported")
+    description(IPP.TAG_URI, "printer-supply-info-uri",
+        string.format("http://%s:%d/", self.host, self.port))
+    description(IPP.TAG_BOOLEAN, "job-account-id-supported", false)
+    description(IPP.TAG_INTEGER, "document-password-supported", 0)
+    description(IPP.TAG_BOOLEAN, "landscape-orientation-requested-preferred", false)
+    description(IPP.TAG_KEYWORD, "jpeg-features-supported", "none")
+    description(IPP.TAG_RANGE_OF_INTEGER, "pdf-k-octets-supported", IPP.range(0, 102400))
+    description(IPP.TAG_RANGE_OF_INTEGER, "jpeg-k-octets-supported", IPP.range(0, 65536))
+    description(IPP.TAG_RANGE_OF_INTEGER, "jpeg-x-dimension-supported", IPP.range(0, 16384))
+    description(IPP.TAG_RANGE_OF_INTEGER, "jpeg-y-dimension-supported", IPP.range(0, 16384))
 
-    -- Document formats: PDF only, plus auto-detection.
+    -- PDF from macOS/CUPS; Apple Raster from iOS AirPrint (decoded to PDF).
     description(IPP.TAG_MIME_MEDIA_TYPE, "document-format-default", "application/pdf")
+    description(IPP.TAG_MIME_MEDIA_TYPE, "document-format-preferred", "application/pdf")
     description(IPP.TAG_MIME_MEDIA_TYPE, "document-format-supported",
-        { "application/pdf", "application/octet-stream" })
+        { "application/pdf", "application/octet-stream", "image/urf", "image/jpeg" })
     description(IPP.TAG_KEYWORD, "pdf-versions-supported",
         { "adobe-1.4", "adobe-1.5", "adobe-1.6", "adobe-1.7", "iso-32000-1_2008" })
     description(IPP.TAG_BOOLEAN, "color-supported", self.color)
-    -- Mirrors the Bonjour URF= TXT key. Kept out of document-format-supported
-    -- so the client still sends PDF; macOS only needs this to classify the
-    -- queue as AirPrint instead of asking for a driver.
     description(IPP.TAG_KEYWORD, "urf-supported", self:urfFeatures())
 
-    -- The screen, expressed as a sheet of paper.
-    template(IPP.TAG_KEYWORD, "media-default", self.media_name)
-    template(IPP.TAG_KEYWORD, "media-supported", self.media_name)
-    template(IPP.TAG_KEYWORD, "media-ready", self.media_name)
-    template(IPP.TAG_BEG_COLLECTION, "media-size-supported", self:mediaSizeCollection())
-    template(IPP.TAG_BEG_COLLECTION, "media-col-default", self:mediaColCollection(DEFAULT_MARGIN))
-    template(IPP.TAG_BEG_COLLECTION, "media-col-database",
-        { self:mediaColCollection(DEFAULT_MARGIN), self:mediaColCollection(0) })
-    template(IPP.TAG_BEG_COLLECTION, "media-col-ready", self:mediaColCollection(DEFAULT_MARGIN))
+    -- A4 is the default so iOS will actually create a job. The screen size
+    -- stays in media-supported for macOS clients that pick it explicitly.
+    template(IPP.TAG_KEYWORD, "media-default", self.default_media.name)
+    template(IPP.TAG_KEYWORD, "media-supported", self:mediaNames())
+    template(IPP.TAG_KEYWORD, "media-ready", self.default_media.name)
+    template(IPP.TAG_BEG_COLLECTION, "media-size-supported", self:mediaSizeCollections())
+    template(IPP.TAG_BEG_COLLECTION, "media-col-default",
+        self:mediaColCollection(DEFAULT_MARGIN, self.default_media))
+    template(IPP.TAG_BEG_COLLECTION, "media-col-database", self:mediaColDatabase())
+    template(IPP.TAG_BEG_COLLECTION, "media-col-ready", self:mediaColReady())
     template(IPP.TAG_KEYWORD, "media-col-supported", {
         "media-bottom-margin", "media-left-margin", "media-right-margin",
-        "media-size", "media-size-name", "media-source", "media-top-margin", "media-type",
+        "media-size", "media-size-name", "media-source", "media-top-margin",
+        "media-type", "media-color",
     })
     template(IPP.TAG_INTEGER, "media-bottom-margin-supported", { 0, DEFAULT_MARGIN })
     template(IPP.TAG_INTEGER, "media-left-margin-supported", { 0, DEFAULT_MARGIN })
@@ -290,7 +367,7 @@ function Printer:attributes(now)
     template(IPP.TAG_KEYWORD, "sides-default", "one-sided")
     template(IPP.TAG_KEYWORD, "sides-supported", "one-sided")
     template(IPP.TAG_INTEGER, "copies-default", 1)
-    template(IPP.TAG_RANGE_OF_INTEGER, "copies-supported", IPP.range(1, 1))
+    template(IPP.TAG_RANGE_OF_INTEGER, "copies-supported", IPP.range(1, 99))
     template(IPP.TAG_ENUM, "orientation-requested-default", 3)
     template(IPP.TAG_ENUM, "orientation-requested-supported", { 3, 4, 5, 6 })
     template(IPP.TAG_ENUM, "finishings-default", 3)
@@ -341,7 +418,7 @@ end
 
 --- Apple Raster features advertised in Bonjour `URF=` and IPP `urf-supported`.
 function Printer:urfFeatures()
-    local parts = {}
+    local parts = { "V1.4" }
     if self.color then
         parts[#parts + 1] = "SRGB24"
     end
@@ -349,7 +426,7 @@ function Printer:urfFeatures()
     parts[#parts + 1] = "RS" .. tostring(self.dpi)
     parts[#parts + 1] = "DM1"
     parts[#parts + 1] = "IS1"
-    parts[#parts + 1] = "V1.4"
+    parts[#parts + 1] = "PQ3-4-5"
     return parts
 end
 
@@ -357,9 +434,8 @@ end
 --
 -- AirPrint (and the macOS "Add Printer" dialog) only auto-selects a driver
 -- for printers that advertise the `_universal` subtype and a non-empty URF
--- key. `pdl` therefore lists `image/urf` as well as PDF. The IPP attributes
--- still accept PDF only, so a driverless queue generated from
--- Get-Printer-Attributes keeps sending PDF.
+-- key. `pdl` lists `image/urf` as well as PDF. macOS still prefers PDF;
+-- iOS sends URF, which is decoded to a PDF before KOReader opens it.
 --
 -- Do not advertise `printer-type`: CUPS treats that key as a shared CUPS
 -- queue and builds a `dnssd://…/cups` URI, which makes macOS ask for a
@@ -378,13 +454,13 @@ function Printer:txtRecord()
         "URF=" .. table.concat(self:urfFeatures(), ","),
         "Color=" .. (self.color and "T" or "F"),
         "Duplex=F",
-        "Copies=F",
+        "Copies=T",
         "Collate=F",
         "Sort=F",
         "Bind=F",
         "Staple=F",
         "Punch=F",
-        "PaperMax=" .. self.media_name,
+        "PaperMax=legal-A4",
         "kind=document",
         "UUID=" .. self.uuid,
         "mopria-certified=1.3",

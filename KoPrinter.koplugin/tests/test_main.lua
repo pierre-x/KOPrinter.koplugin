@@ -11,6 +11,7 @@ package.cpath = home .. "/.luarocks/lib/lua/5.1/?.so;" .. package.cpath
 local socket = require("socket")
 local lfs = require("lfs")
 local IPP = require("ipp_message")
+local Urf = require("urf")
 
 local failures, checks = 0, 0
 local function check(cond, msg)
@@ -259,15 +260,18 @@ local head, payload = send(table.concat({
 check(head:find("200 OK", 1, true), "Get-Printer-Attributes answered 200: " .. head:sub(1, 40))
 local response = IPP.decode(payload)
 check(response and response.status_code == IPP.OK, "successful-ok")
-check(IPP.getValue(response, "media-default") == "custom_koreader_90.76x122.6mm",
-      "page size derived from the screen: " .. tostring(IPP.getValue(response, "media-default")))
+check(IPP.getValue(response, "media-default") == "iso_a4_210x297mm",
+      "AirPrint default is A4: " .. tostring(IPP.getValue(response, "media-default")))
 local size = IPP.getValue(response, "media-size-supported")
 check(size and size.members[1].values[1] == 9076 and size.members[2].values[1] == 12260,
       "media dimensions in hundredths of a millimetre")
 -- CUPS names a zero-margin entry "<size>.Borderless" and the default
 -- "<size>": both must exist or the default page size falls back to Letter.
+local media_names = table.concat(IPP.getValues(response, "media-supported"), ",")
+check(media_names:find("iso_a4_210x297mm", 1, true) and media_names:find("na_letter_8.5x11in", 1, true),
+      "A4 and Letter are advertised for AirPrint: " .. media_names)
 local database = IPP.findAttribute(response, "media-col-database")
-check(database and #database.values == 2, "media-col-database offers a bordered and a borderless entry")
+check(database and #database.values >= 3, "media-col-database offers the screen and standard sizes")
 local function margin(collection)
     for _, member in ipairs(collection.members) do
         if member.name == "media-top-margin" then return member.values[1] end
@@ -278,13 +282,30 @@ check(database and margin(database.values[1]) > 0 and margin(database.values[2])
 local resolution = IPP.getValue(response, "printer-resolution-default")
 check(resolution and resolution.x == 300, "resolution from the screen DPI")
 check(IPP.getValue(response, "color-supported") == false, "monochrome screen reported as such")
-check(IPP.getValue(response, "print-color-mode-supported") == "monochrome", "monochrome colour mode")
+local color_modes = table.concat(IPP.getValues(response, "print-color-mode-supported"), ",")
+check(color_modes:find("monochrome", 1, true) and color_modes:find("auto", 1, true),
+      "AirPrint colour modes include auto: " .. color_modes)
+check(IPP.getValue(response, "document-format-preferred") == "application/pdf",
+      "document-format-preferred is PDF")
 local formats = {}
 for _, value in ipairs(IPP.getValues(response, "document-format-supported")) do
     formats[#formats + 1] = value
 end
-check(table.concat(formats, ",") == "application/pdf,application/octet-stream",
-      "PDF only: " .. table.concat(formats, ","))
+check(table.concat(formats, ",") == "application/pdf,application/octet-stream,image/urf,image/jpeg",
+      "PDF, Apple Raster and JPEG: " .. table.concat(formats, ","))
+local tray = IPP.getValue(response, "printer-input-tray")
+check(type(tray) == "string" and tray:find("name=auto;", 1, true)
+      and tray:find("level=-3", 1, true) and tray:find("mediafeed=29700", 1, true),
+      "one loaded auto tray at A4: " .. tostring(tray))
+local mandatory = IPP.findAttribute(response, "printer-mandatory-job-attributes")
+check(mandatory and mandatory.tag == IPP.TAG_NO_VALUE,
+      "printer-mandatory-job-attributes is present and empty")
+check(IPP.getValue(response, "media-ready") == "iso_a4_210x297mm",
+      "only A4 is loaded: " .. tostring(IPP.getValue(response, "media-ready")))
+local ready = IPP.findAttribute(response, "media-col-ready")
+check(ready and #ready.values == 1, "media-col-ready is a single A4 tray")
+check(IPP.getValue(response, "jpeg-features-supported") == "none",
+      "jpeg-features-supported is present")
 
 -- Print a real PDF the way macOS does: chunked, with Expect: 100-continue ------
 local pdf = "%PDF-1.7\n" .. string.rep("koprinter payload ", 4096) .. "\n%%EOF\n"
@@ -328,6 +349,34 @@ local contents = file and file:read("*a")
 if file then file:close() end
 check(contents == pdf, string.format("document stored byte for byte (%d of %d bytes)",
       contents and #contents or -1, #pdf))
+
+-- iOS AirPrint sends Apple Raster; it must land as an openable PDF ------------
+local urf_pixels = string.char(16, 32, 48, 64, 80, 96)
+local urf = Urf.encode{ { width = 3, height = 2, dpi = 72, data = urf_pixels, bpp = 8 } }
+local urf_attributes = ippRequest(IPP.OP_PRINT_JOB, operationAttributes{
+    IPP.attr(IPP.TAG_NAME, "requesting-user-name", "iphone"),
+    IPP.attr(IPP.TAG_NAME, "job-name", "From iPhone"),
+    IPP.attr(IPP.TAG_MIME_MEDIA_TYPE, "document-format", "image/urf"),
+})
+opened = {}
+head, payload = send(table.concat({
+    "POST /ipp/print HTTP/1.1\r\n",
+    "Host: 127.0.0.1:" .. PORT .. "\r\n",
+    "Content-Type: application/ipp\r\n",
+    "Content-Length: " .. #(urf_attributes .. urf) .. "\r\n\r\n",
+    urf_attributes .. urf,
+}))
+check(head:find("200 OK", 1, true), "URF Print-Job answered 200")
+local urf_response = IPP.decode(payload)
+check(urf_response and urf_response.status_code == IPP.OK,
+      "URF job successful-ok: " .. tostring(urf_response and urf_response.status_code))
+check(#opened == 1 and opened[1]:sub(-4) == ".pdf",
+      "URF job is opened as a PDF: " .. tostring(opened[1]))
+local urf_file = opened[1] and io.open(opened[1], "rb")
+local urf_pdf = urf_file and urf_file:read("*a")
+if urf_file then urf_file:close() end
+check(urf_pdf and urf_pdf:sub(1, 5) == "%PDF-" and urf_pdf:find(urf_pixels, 1, true),
+      "decoded PDF contains the URF pixels")
 
 -- Without the option, a document is announced but not opened -------------------
 G_reader_settings.store.koprinter.open_on_receive = false
