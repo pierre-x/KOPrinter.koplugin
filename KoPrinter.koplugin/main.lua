@@ -118,9 +118,18 @@ local function spoolDir()
     if type(settings.spool_dir) == "string" and settings.spool_dir ~= "" then
         return settings.spool_dir
     end
-    local home = G_reader_settings:readSetting("home_dir") or Device.home_dir
+    -- Device.home_dir is /mnt/us on a Kindle, which is the USB root rather
+    -- than the library. Prefer the file-manager home, then documents/.
+    local home = G_reader_settings:readSetting("home_dir")
     if type(home) ~= "string" or home == "" then
-        home = "/tmp"
+        home = Device.home_dir
+        if type(home) == "string" and home ~= "" then
+            if lfs.attributes(home .. "/documents", "mode") == "directory" then
+                home = home .. "/documents"
+            end
+        else
+            home = "/tmp"
+        end
     end
     return home .. "/" .. SPOOL_SUBDIR
 end
@@ -148,24 +157,33 @@ local function networkInterface()
     return NetworkMgr:getNetworkInterfaceName() or "wlan0"
 end
 
-local function firewallRule(interface, port)
-    return string.format("INPUT -i %s -p tcp --dport %d -j ACCEPT", interface, port)
+--- Same hole the HTTP inspector punches: INPUT for new connections and
+-- OUTPUT so the SYN-ACK is not dropped. The default policy is DROP.
+local function firewallCommands(port, action)
+    return {
+        string.format("iptables %s INPUT -p tcp --dport %d -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT", action, port),
+        string.format("iptables %s OUTPUT -p tcp --sport %d -m conntrack --ctstate ESTABLISHED -j ACCEPT", action, port),
+    }
 end
 
---- Lets IPP through the Kindle firewall, whose INPUT policy drops by default.
-local function openFirewall(interface, port)
+local function openFirewall(_interface, port)
     if not Device:isKindle() then
         return
     end
-    local rule = firewallRule(interface, port)
-    os.execute(string.format("iptables -C %s 2>/dev/null || iptables -I %s", rule, rule))
+    for _, cmd in ipairs(firewallCommands(port, "-C")) do
+        local check = cmd
+        local insert = cmd:gsub("%-C ", "-I ", 1)
+        os.execute(string.format("%s 2>/dev/null || %s", check, insert))
+    end
 end
 
-local function closeFirewall(interface, port)
+local function closeFirewall(_interface, port)
     if not Device:isKindle() then
         return
     end
-    os.execute(string.format("iptables -D %s 2>/dev/null", firewallRule(interface, port)))
+    for _, cmd in ipairs(firewallCommands(port, "-D")) do
+        os.execute(cmd .. " 2>/dev/null")
+    end
 end
 
 local function saveSettings()
@@ -410,11 +428,21 @@ function KOPrinter:onMDNSCollectServices(services)
     if not KOPrinter.isRunning() then
         return
     end
+    local txt = printer:txtRecord()
+    local name = printerName()
     services[#services + 1] = {
         type = "_ipp._tcp",
         port = server.port,
-        instance = printerName(),
-        txt = printer:txtRecord(),
+        instance = name,
+        txt = txt,
+        subtypes = { "_universal" },
+    }
+    -- Bonjour Printing spec: _printer._tcp is mandatory even when LPD is off.
+    services[#services + 1] = {
+        type = "_printer._tcp",
+        port = 0,
+        instance = name,
+        txt = { "txtvers=1" },
     }
 end
 

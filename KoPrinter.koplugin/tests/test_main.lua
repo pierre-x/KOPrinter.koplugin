@@ -131,14 +131,21 @@ check(broadcast[#broadcast] == "onMDNSServicesChanged", "asked mDNS to announce 
 -- The mDNS responder collects the printer service ------------------------------
 local services = {}
 plugin:onMDNSCollectServices(services)
-check(#services == 1 and services[1].type == "_ipp._tcp", "declares an _ipp._tcp service")
+check(#services == 2 and services[1].type == "_ipp._tcp", "declares an _ipp._tcp service")
 check(services[1].port == PORT, "declares the port it listens on: " .. tostring(services[1].port))
 check(services[1].instance == "KOReader on KindleBasic4",
       "instance name from the device model: " .. tostring(services[1].instance))
+check(services[1].subtypes and services[1].subtypes[1] == "_universal",
+      "AirPrint subtype _universal is advertised")
+check(services[2] and services[2].type == "_printer._tcp" and services[2].port == 0,
+      "Bonjour requires _printer._tcp even when LPD is off")
 local txt = table.concat(services[1].txt or {}, " ")
 check(txt:find("pdl=application/pdf", 1, true), "TXT advertises PDF: " .. txt)
+check(txt:find("image/urf", 1, true), "TXT lists image/urf so macOS treats it as AirPrint")
 check(txt:find("rp=ipp/print", 1, true), "TXT carries the resource path")
-check(not txt:find("URF", 1, true), "TXT must not claim URF, or macOS would send raster instead of PDF")
+check(txt:find("URF=", 1, true), "TXT carries a non-empty URF key")
+check(not txt:find("printer-type=", 1, true),
+      "TXT omits printer-type so CUPS does not treat it as a shared queue")
 
 -- Drive the plugin the way UIManager does.
 local function pump(times)
@@ -380,11 +387,11 @@ check(KOPrinter.isRunning(), "started once the network is back")
 KOPrinter.stop()
 device.isKindle = function() return true end
 KOPrinter.start()
-check(executed[#executed]:find("iptables %-I INPUT %-i wlan0 %-p tcp %-%-dport " .. PORT .. " %-j ACCEPT"),
+check(table.concat(executed, "\n"):find("iptables %-I INPUT %-p tcp %-%-dport " .. PORT),
       "firewall opened for the IPP port: " .. tostring(executed[#executed]))
 zmqs[1].stop(zmqs[1]) -- what UIManager:quit() does
 check(not KOPrinter.isRunning(), "stopped on quit")
-check(executed[#executed]:find("iptables %-D INPUT") ~= nil,
+check(table.concat(executed, "\n"):find("iptables %-D INPUT %-p tcp %-%-dport " .. PORT),
       "firewall closed on quit: " .. tostring(executed[#executed]))
 device.isKindle = function() return false end
 

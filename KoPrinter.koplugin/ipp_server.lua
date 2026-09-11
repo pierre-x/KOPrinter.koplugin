@@ -83,32 +83,20 @@ function Server:start()
         return true
     end
     local socket = loadSocket(self)
-    -- socket.tcp() creates the file descriptor lazily, so setting
-    -- SO_REUSEADDR on it before binding silently does nothing; tcp4 creates
-    -- it right away. Without the option, restarting after a network blip
-    -- fails while a closed connection lingers in TIME_WAIT.
-    local listener, err = socket.tcp4 and socket.tcp4() or socket.tcp()
+    -- Same constructor as KOReader's SimpleTCPServer (the HTTP inspector):
+    -- socket.bind() owns SO_REUSEADDR and listen(). tcp4()+bind() appeared
+    -- to succeed on a Kindle and then left no listening fd behind.
+    local host = self.address == "*" and "*" or self.address
+    local listener, err = socket.bind(host, self.port, MAX_CONNECTIONS)
     if not listener then
-        return nil, tostring(err)
+        return nil, string.format("cannot bind port %d: %s", self.port, tostring(err))
     end
-    local reused, reuse_err = listener:setoption("reuseaddr", true)
-    if not reused then
-        self.logger.warn("KOPrinter: cannot set SO_REUSEADDR: " .. tostring(reuse_err))
-    end
-    local ok, bind_err = listener:bind(self.address == "*" and "0.0.0.0" or self.address, self.port)
-    if not ok then
-        listener:close()
-        return nil, string.format("cannot bind port %d: %s", self.port, tostring(bind_err))
-    end
-    ok, bind_err = listener:listen(MAX_CONNECTIONS)
-    if not ok then
-        listener:close()
-        return nil, string.format("cannot listen on port %d: %s", self.port, tostring(bind_err))
-    end
-    listener:settimeout(0)
+    -- 10 ms, matching SimpleTCPServer. A zero timeout has been seen to make
+    -- the listen socket vanish on Kindle's LuaSocket.
+    listener:settimeout(0.01)
     self.listener = listener
     self.printer.start_time = self.clock()
-    self.logger.info(string.format("KOPrinter: IPP server listening on %s:%d", self.address, self.port))
+    self.logger.info(string.format("KoPrinter: IPP server listening on %s:%d", self.address, self.port))
     return true
 end
 

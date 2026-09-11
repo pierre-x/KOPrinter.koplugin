@@ -70,7 +70,7 @@ local function shellQuote(s)
 end
 
 local advertise = {
-    "dns-sd -P", shellQuote(printer.name), "_ipp._tcp local",
+    "dns-sd -P", shellQuote(printer.name), "_ipp._tcp,_universal local",
     tostring(port), "localhost 127.0.0.1",
 }
 for _, entry in ipairs(printer:txtRecord()) do

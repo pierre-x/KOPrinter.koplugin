@@ -253,6 +253,10 @@ function Printer:attributes(now)
     description(IPP.TAG_KEYWORD, "pdf-versions-supported",
         { "adobe-1.4", "adobe-1.5", "adobe-1.6", "adobe-1.7", "iso-32000-1_2008" })
     description(IPP.TAG_BOOLEAN, "color-supported", self.color)
+    -- Mirrors the Bonjour URF= TXT key. Kept out of document-format-supported
+    -- so the client still sends PDF; macOS only needs this to classify the
+    -- queue as AirPrint instead of asking for a driver.
+    description(IPP.TAG_KEYWORD, "urf-supported", self:urfFeatures())
 
     -- The screen, expressed as a sheet of paper.
     template(IPP.TAG_KEYWORD, "media-default", self.media_name)
@@ -335,9 +339,31 @@ function Printer:selectAttributes(requested, now)
     return selected
 end
 
---- The Bonjour TXT record for `_ipp._tcp`, per the Bonjour Printing spec.
--- URF is deliberately absent: without it macOS keeps sending PDF instead of
--- switching to Apple Raster.
+--- Apple Raster features advertised in Bonjour `URF=` and IPP `urf-supported`.
+function Printer:urfFeatures()
+    local parts = {}
+    if self.color then
+        parts[#parts + 1] = "SRGB24"
+    end
+    parts[#parts + 1] = "W8"
+    parts[#parts + 1] = "RS" .. tostring(self.dpi)
+    parts[#parts + 1] = "DM1"
+    parts[#parts + 1] = "IS1"
+    parts[#parts + 1] = "V1.4"
+    return parts
+end
+
+--- The Bonjour TXT record for `_ipp._tcp`.
+--
+-- AirPrint (and the macOS "Add Printer" dialog) only auto-selects a driver
+-- for printers that advertise the `_universal` subtype and a non-empty URF
+-- key. `pdl` therefore lists `image/urf` as well as PDF. The IPP attributes
+-- still accept PDF only, so a driverless queue generated from
+-- Get-Printer-Attributes keeps sending PDF.
+--
+-- Do not advertise `printer-type`: CUPS treats that key as a shared CUPS
+-- queue and builds a `dnssd://…/cups` URI, which makes macOS ask for a
+-- driver instead of using AirPrint.
 function Printer:txtRecord()
     return {
         "txtvers=1",
@@ -348,7 +374,8 @@ function Printer:txtRecord()
         "note=" .. self.location,
         "priority=0",
         "adminurl=http://" .. self.host .. ":" .. self.port .. "/",
-        "pdl=application/pdf",
+        "pdl=application/pdf,image/urf",
+        "URF=" .. table.concat(self:urfFeatures(), ","),
         "Color=" .. (self.color and "T" or "F"),
         "Duplex=F",
         "Copies=F",
@@ -360,9 +387,6 @@ function Printer:txtRecord()
         "PaperMax=" .. self.media_name,
         "kind=document",
         "UUID=" .. self.uuid,
-        "TLS=none",
-        "printer-state=" .. self.state,
-        "printer-type=0x801046",
         "mopria-certified=1.3",
     }
 end
